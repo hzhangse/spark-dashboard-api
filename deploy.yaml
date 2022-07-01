@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: sparkapi
+  name: sparkapi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sparkapi
+  template:
+    metadata:
+      labels:
+        app: sparkapi
+    spec:
+      containers:
+      - image: registry.cn-shanghai.aliyuncs.com/xxxx/sparkapi:latest
+        imagePullPolicy: Always
+        name: sparkapi
+        env:                    ## set the variable using env 
+          - name: INFLUXDB_HOST     #Key 
+            value: "http://10.1.2.61:30617"  #value
+          - name: INFLUXDB_DATABASE_NAME     
+            value: "sparkmeasure"
+          - name: PROM_HTTP_URL     #if using prometheus as data source 
+            value: "http://10.1.2.61:30003/"            
+          - name: DASHBOARD_URL_TEMPLATE     #template url of grafana for spark-dashboard
+            value: "http://10.1.2.61:31042/d/-H0ElOqmiv/spark_perf_dashboard_v03?from=%s&to=%s&var-UserName=xxx&var-ApplicationId=%s"              
+        ports:
+        - containerPort: 8087
+          protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-api
+spec:
+  selector:
+    app: sparkapi
+  ports:
+    - protocol: TCP
+      port: 8087
+      targetPort: 8087
+#  type: ClusterIP
+  type: LoadBalancer
+
