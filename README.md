@@ -43,8 +43,8 @@ create launch.json in .vsocde folder
     }
 
 ### deploy on kubernetes
-docker build -t registry.cn-shanghai.aliyuncs.com/xxxx/sparkapi:latest .
-docker push registry.cn-shanghai.aliyuncs.com/xxxx/sparkapi:latest
+   docker build -t registry.cn-shanghai.aliyuncs.com/xxxx/sparkapi:latest .
+   docker push registry.cn-shanghai.aliyuncs.com/xxxx/sparkapi:latest
 
     see from the deploy.yaml
         env:                    ## set the variable using env 

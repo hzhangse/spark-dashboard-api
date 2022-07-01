@@ -54,8 +54,9 @@ func qryProm(app string, beforeDays int64) error {
 
 		startTime := string(row["startTime"])
 		applicationId := string(row["applicationId"])
-		app.startTime = startTime
-		app.StartTimeStr, err = parseTime(startTime)
+
+		app.startTime = adjustTime(startTime, -5)
+		app.StartTimeStr, err = formatTime(startTime)
 		if err != nil {
 			return err
 		}
@@ -75,8 +76,8 @@ func qryProm(app string, beforeDays int64) error {
 		} else {
 			for _, endRow := range resJobEnd {
 				endTime := string(endRow["completionTime"])
-				app.endTime = endTime
-				app.EndTimeStr, err = parseTime(endTime)
+				app.endTime = adjustTime(endTime, 9)
+				app.EndTimeStr, err = formatTime(endTime)
 				if err != nil {
 					return err
 				}
@@ -130,17 +131,33 @@ func querySeries(metric string, conditions map[string]string, beforeDays int64) 
 	return lbls, nil
 }
 
-func parseTime(varTime string) (string, error) {
-	location, err := time.LoadLocation("Asia/Shanghai")
+func formatTime(varTime string) (string, error) {
+	layout := "2006-01-02 15:04:05"
+	t, err := parseTime(varTime)
 	if err != nil {
 		return "", err
 	}
+	et := t.Format(layout)
+	return et, nil
+}
+
+func parseTime(varTime string) (time.Time, error) {
+	location, _ := time.LoadLocation("Asia/Shanghai")
 
 	tm, err := strconv.ParseInt(varTime, 10, 64)
 	if err != nil {
-		return "", err
+		return time.Time{}, err
 	}
-	layout := "2006-01-02 15:04:05"
-	et := time.Unix(tm/1000, 0).In(location).Format(layout)
+	et := time.Unix(tm/1000, 0).In(location)
 	return et, nil
+}
+
+func adjustTime(varTime string, duration int64) string {
+	t, err := parseTime(varTime)
+	if err != nil {
+		return varTime
+	}
+	adjustTime := t.Add(time.Duration(time.Second * time.Duration(duration)))
+	return fmt.Sprintf("%d", adjustTime.UnixNano()/1e6)
+
 }
