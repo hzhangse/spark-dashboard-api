@@ -11,11 +11,15 @@
             "mode": "debug",
             "program": "app.go",
             "env": { 
-                "PROM_HTTP_URL" : "http://10.1.2.61:30003/",
-                "INFLUXDB_HOST":"http://10.1.2.61:30617",
+                "Brokers" : "",
+                "Topic": "sparkmeasure",
+                "consume-group": "debug2",
+                "PROM_HTTP_URL" : "",
+                "INFLUXDB_HOST":"",
                 "INFLUXDB_DATABASE_NAME":"sparkmeasure",
-                "DASHBOARD_URL_TEMPLATE":"http://10.1.2.61:31042/d/q4iK3uq7z/spark_perf_dashboard_v03_with_annotations_prom?from=%s&to=%s&var-UserName=donggetan&var-ApplicationId=%s"}
-        },
+                "DASHBOARD_URL_TEMPLATE":"http://10.1.2.61:31042/d/q4iK3uq7z/spark_perf_dashboard_v03_with_annotations_prom?from=%s&to=%s&var-UserName=x&var-ApplicationId=%s"}
+
+            },
        
     ]
 }

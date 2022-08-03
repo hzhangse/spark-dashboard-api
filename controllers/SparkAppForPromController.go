@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	utils "spark-api/utils"
 	"strconv"
 	"time"
 
@@ -36,7 +37,7 @@ func (influx Prometheus) doHandler(c *gin.Context) error {
 func qryProm(app string, beforeDays int64) error {
 	conditions := make(map[string]string)
 	if app != "" {
-		conditions["applicationId"] = app
+		conditions["appId"] = app
 		if _, ok := sparkApplicationMap[app]; ok {
 			if sparkApplicationMap[app].endTime != "now" {
 				return nil
@@ -53,16 +54,16 @@ func qryProm(app string, beforeDays int64) error {
 		var app SparkApplication
 
 		startTime := string(row["startTime"])
-		applicationId := string(row["applicationId"])
+		applicationId := string(row["appId"])
 
-		app.startTime = adjustTime(startTime, -5)
-		app.StartTimeStr, err = formatTime(startTime)
+		app.startTime = utils.AdjustTime(startTime, -5)
+		app.StartTimeStr, err = utils.FormatTime(startTime)
 		if err != nil {
 			return err
 		}
 		app.ApplicationId = applicationId
 
-		conditions["applicationId"] = applicationId
+		conditions["appId"] = applicationId
 		resJobEnd, err := querySeries("jobs_ended", conditions, beforeDays)
 		if err != nil {
 
@@ -76,8 +77,8 @@ func qryProm(app string, beforeDays int64) error {
 		} else {
 			for _, endRow := range resJobEnd {
 				endTime := string(endRow["completionTime"])
-				app.endTime = adjustTime(endTime, 9)
-				app.EndTimeStr, err = formatTime(endTime)
+				app.endTime = utils.AdjustTime(endTime, 9)
+				app.EndTimeStr, err = utils.FormatTime(endTime)
 				if err != nil {
 					return err
 				}
@@ -129,35 +130,4 @@ func querySeries(metric string, conditions map[string]string, beforeDays int64) 
 		fmt.Println(lbl)
 	}
 	return lbls, nil
-}
-
-func formatTime(varTime string) (string, error) {
-	layout := "2006-01-02 15:04:05"
-	t, err := parseTime(varTime)
-	if err != nil {
-		return "", err
-	}
-	et := t.Format(layout)
-	return et, nil
-}
-
-func parseTime(varTime string) (time.Time, error) {
-	location, _ := time.LoadLocation("Asia/Shanghai")
-
-	tm, err := strconv.ParseInt(varTime, 10, 64)
-	if err != nil {
-		return time.Time{}, err
-	}
-	et := time.Unix(tm/1000, 0).In(location)
-	return et, nil
-}
-
-func adjustTime(varTime string, duration int64) string {
-	t, err := parseTime(varTime)
-	if err != nil {
-		return varTime
-	}
-	adjustTime := t.Add(time.Duration(time.Second * time.Duration(duration)))
-	return fmt.Sprintf("%d", adjustTime.UnixNano()/1e6)
-
 }
