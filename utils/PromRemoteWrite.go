@@ -31,7 +31,7 @@ var (
 )
 
 func init() {
-	writeURLFlag = os.Getenv("PROM_HTTP_URL") + "/api/v1/write"
+	writeURLFlag = os.Getenv("PROM_REMOTE_WRITE_URL")
 	if len(writeURLFlag) == 0 {
 		panic("no Prom Remote Write URL defined, please set PromRemoteWriteURL")
 	}
