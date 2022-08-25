@@ -15,18 +15,22 @@ spec:
         app: sparkapi
     spec:
       containers:
-      - image: registry.cn-shanghai.aliyuncs.com/xxxx/sparkapi:latest
+      - image: registry.cn-shanghai.aliyuncs.com/kyligence/sparkapi:latest
         imagePullPolicy: Always
         name: sparkapi
-        env:                    ## set the variable using env 
-          - name: INFLUXDB_HOST     #Key 
-            value: "http://10.1.2.61:30617"  #value
+        env:                    
+          - name: INFLUXDB_HOST     
+            value: "http://spark-dashboard-influx.default.svc.cluster.local:8086"  #value
           - name: INFLUXDB_DATABASE_NAME     
             value: "sparkmeasure"
-          - name: PROM_HTTP_URL     #if using prometheus as data source 
-            value: "http://10.1.2.61:30003/"            
+          - name: PROM_REMOTE_WRITE_URL
+            value: http://kong-proxy.kong.svc.cluster.local:80
+          - name: PROM_HTTP_URL
+            value: http://thanos-query.thanos.svc.cluster.local:9090
           - name: DASHBOARD_URL_TEMPLATE     #template url of grafana for spark-dashboard
-            value: "http://10.1.2.61:31042/d/-H0ElOqmiv/spark_perf_dashboard_v03?from=%s&to=%s&var-UserName=xxx&var-ApplicationId=%s"              
+            value: "http://10.1.2.63:31219/d/-H0ElOqmiv/spark_perf_dashboard_v03?from=%s&to=%s&var-UserName=xxx&var-ApplicationId=%s"    
+          - name: "Brokers" 
+            value: "my-cluster-kafka-brokers.my-kafka-project.svc.cluster.local:9092"    
         ports:
         - containerPort: 8087
           protocol: TCP
@@ -43,6 +47,7 @@ spec:
     - protocol: TCP
       port: 8087
       targetPort: 8087
+  type: NodePort      
 #  type: ClusterIP
-  type: LoadBalancer
+#  type: LoadBalancer
 

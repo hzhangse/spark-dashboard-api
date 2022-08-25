@@ -25,9 +25,9 @@ type header struct {
 var (
 	logger       = stdlog.New(os.Stderr, "promremotecli_log ", stdlog.LstdFlags)
 	writeURLFlag string
-	headers      map[string]string
-	client       promremote.Client
-	err          error
+	// headers      map[string]string
+	client promremote.Client
+	err    error
 )
 
 func init() {
@@ -35,8 +35,6 @@ func init() {
 	if len(writeURLFlag) == 0 {
 		panic("no Prom Remote Write URL defined, please set PromRemoteWriteURL")
 	}
-	headers = make(map[string]string)
-	headers["User-Agent"] = "kafka-consumer"
 
 	cfg := promremote.NewConfig(
 		promremote.WriteURLOption(writeURLFlag),
@@ -67,6 +65,70 @@ func WriteInBatch(jsonArr []string, currentKey string) error {
 	//return nil
 	return send2Prom(tslist, currentKey)
 
+}
+
+func convertMap(jsonStr string) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	err := json.Unmarshal(stringTobyteSlice(jsonStr), &result)
+	if err != nil {
+		logger.Println("the source message is invalid, ignore this message:"+jsonStr, err)
+		return nil, err
+	}
+	return result, nil
+
+}
+
+func convertTimeSeries(map1 map[string]interface{}) (promremote.TimeSeries, string, error) {
+	//map1 := make(map[string]interface{})
+	appId := ""
+	var result = promremote.TimeSeries{}
+
+	dpValue := map1["epochMillis"]
+
+	var dpFlag dp = dp{}
+	switch dpValue.(type) {
+	case float64:
+		tm := dpValue.(float64)
+		ts, err := ParseInt64ToTime(int64(tm))
+		if err == nil {
+			dpFlag = dp{
+				//time.Now(),
+				ts,
+				tm,
+			}
+			i := 0
+			l := len(map1)
+			var labelsListFlag = make([]promremote.Label, l)
+			for k, v := range map1 {
+				if k == "name" {
+					labelsListFlag[i] = promremote.Label{
+						Name:  "__name__",
+						Value: v.(string),
+					}
+
+				} else {
+					vStr := GetInterfaceToString(v)
+					if k == "appId" {
+						appId = vStr
+					}
+					labelsListFlag[i] = promremote.Label{
+						Name:  k,
+						Value: vStr,
+					}
+				}
+				i++
+			}
+
+			result = promremote.TimeSeries{
+				Labels:    []promremote.Label(labelsListFlag),
+				Datapoint: promremote.Datapoint(dpFlag),
+			}
+		} else {
+			return result, appId, err
+		}
+	}
+	return result, appId, nil
 }
 
 func convert(jsonStr string) (promremote.TimeSeries, error) {
@@ -124,7 +186,9 @@ func convert(jsonStr string) (promremote.TimeSeries, error) {
 func send2Prom(tsList promremote.TSList, currentKey string) error {
 	// logger.Println("writing datapoint", dpFlag.String())
 	// logger.Println("labelled", labelsListFlag.String())
-	// logger.Println("writing to", writeURLFlag)
+	logger.Println("currentKey set to head", currentKey)
+	headers := make(map[string]string)
+	headers["User-Agent"] = "kafka-consumer"
 	headers["appid"] = currentKey
 	result, writeErr := client.WriteTimeSeries(context.Background(), tsList,
 		promremote.WriteOptions{Headers: headers})
