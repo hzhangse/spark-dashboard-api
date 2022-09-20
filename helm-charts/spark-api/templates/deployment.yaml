@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "spark-api.fullname" . }}
+  labels:
+    app: sparkapi
+  {{- include "spark-api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app: sparkapi
+    {{- include "spark-api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: sparkapi
+      {{- include "spark-api.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - env:
+        {{- range $key, $val := .Values.env }}
+        - name: {{  $key }}
+          value: {{  $val | quote }}
+        {{- end }}  
+        image: {{ .Values.api.sparkapi.image.repository }}:{{ .Values.api.sparkapi.image.tag
+          | default .Chart.AppVersion }}
+        imagePullPolicy: {{ .Values.api.sparkapi.image.imagePullPolicy }}
+        name: sparkapi
+        ports:
+        - containerPort: 8087
+          protocol: TCP
+        resources: {}

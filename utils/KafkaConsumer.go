@@ -36,7 +36,7 @@ var (
 
 func init() {
 	//Kafka consumer group definition
-	brokers = os.Getenv("Brokers")
+	brokers = os.Getenv("KafkaBrokers")
 	if len(brokers) == 0 {
 		panic("no Kafka bootstrap brokers defined, please set the -brokers flag")
 	}
@@ -46,7 +46,7 @@ func init() {
 		group = "sparkmeasure-cg"
 	}
 	//Kafka topics to be consumed, as a comma seperated list
-	topics = os.Getenv("Topic")
+	topics = os.Getenv("KafkaTopic")
 	if len(topics) == 0 {
 		topics = "sparkmeasure-stageinfo"
 	}

@@ -1,0 +1,22 @@
+api:
+  ports:
+  - port: 8087
+    protocol: TCP
+    targetPort: 8087
+  replicas: 1
+  sparkapi:
+    image:
+      repository: registry.cn-shanghai.aliyuncs.com/kyligence/sparkapi
+      tag: latest
+      imagePullPolicy: Always
+  type: NodePort
+kubernetesClusterDomain: cluster.local
+env: 
+  InfluxDBHost: http://spark-dashboard-influx.default.svc.cluster.local:8086
+  InfluxDBDatabase: sparkmeasure
+  PromRemoteWriteUrl: http://kong-proxy.kong.svc.cluster.local/api/v1/write
+  PromHttpUrl: http://thanos-query.thanos.svc.cluster.local:9090
+  DashboardUrlTemplate: http://10.1.2.63:31219/d/-H0ElOqmiv/spark_perf_dashboard_v03?from=%s&to=%s&var-UserName=xxx&var-ApplicationId=%s
+  KafkaBrokers: kafka-all-broker.kafka.svc.cluster.local:29092
+  KafkaTopic: sparkmeasure
+  BatchSendNum: '1000'

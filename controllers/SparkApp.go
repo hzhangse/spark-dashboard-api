@@ -7,16 +7,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var influxdbhost = os.Getenv(INFLUXDB_HOST)
-var influxdb = os.Getenv(InfluxDBDatabaseName)
-var dashboardUrlTemplate = os.Getenv("DASHBOARD_URL_TEMPLATE")
-var prom_http_url = os.Getenv(PROM_HTTP_URL)
+var influxdbhost = os.Getenv("InfluxDBHost")
+var influxdb = os.Getenv("InfluxDBDatabase")
+var dashboardUrlTemplate = os.Getenv("DashboardUrlTemplate")
+var prom_http_url = os.Getenv("PromHttpUrl")
 
 const (
-	INFLUXDB_HOST        = "INFLUXDB_HOST"
-	InfluxDBDatabaseName = "INFLUXDB_DATABASE_NAME"
-	InfluxDBMeasurement  = "INFLUXDB_MEASUREMENT"
-	PROM_HTTP_URL        = "PROM_HTTP_URL"
+	InfluxDBMeasurement = "INFLUXDB_MEASUREMENT"
 )
 
 type SparkApplication struct {
