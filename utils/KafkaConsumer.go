@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"container/list"
 	"context"
 	"log"
 	"os"
@@ -11,25 +12,25 @@ import (
 	"time"
 
 	"github.com/Shopify/sarama"
+	"github.com/avast/retry-go/v4"
 )
 
 // Sarama configuration options
 var (
-	brokers                  = ""
-	version                  = "3.2.0"
-	group                    = ""
-	topics                   = ""
-	assignor                 = ""
-	oldest                   = true
-	verbose                  = false
-	batchSendNum       int64 = 500
-	admin              sarama.ClusterAdmin
-	kafkaClient        sarama.Client
-	minBlockDuration                        = "10m"
-	consumerGroupCache map[string]*Consumer = make(map[string]*Consumer)
-
-	topicCache         sync.Map
-	finishedTopicCache sync.Map
+	brokers                     = ""
+	version                     = "3.2.0"
+	group                       = ""
+	topics                      = ""
+	assignor                    = ""
+	oldest                      = true
+	verbose                     = false
+	batchSendNum          int64 = 500
+	admin                 sarama.ClusterAdmin
+	kafkaClient           sarama.Client
+	minBlockDuration                           = "1H"
+	minBlockDurationValue                      = 1
+	minBlockDurationUnit                       = "H"
+	consumerGroupCache    map[string]*Consumer = make(map[string]*Consumer)
 
 	//producer sarama.SyncProducer
 )
@@ -73,8 +74,14 @@ func init() {
 		verbose, _ = strconv.ParseBool(verboseStr)
 	}
 
-	minBlockDuration = os.Getenv("minBlockDuration")
-
+	minBlockDuration = strings.ToUpper(os.Getenv("minBlockDuration"))
+	if len(minBlockDuration) == 0 {
+		minBlockDuration = "1M"
+	}
+	minBlockDurationValue, err = strconv.Atoi(string(minBlockDuration[0 : len(minBlockDuration)-1]))
+	if err == nil {
+		minBlockDurationUnit = string(minBlockDuration[len(minBlockDuration)-1])
+	}
 	initKafka()
 	go CreateConsumer(topics, true)
 }
@@ -95,17 +102,22 @@ func initKafka() {
 		kafkaClient.Close()
 		admin.Close()
 	}
+	err = retry.Do(
+		func() error {
+			kafkaClient, err = sarama.NewClient(strings.Split(brokers, ","), config)
+			if err != nil {
+				log.Printf("Error new kafka client: %v", err)
+				return err
+			}
 
-	kafkaClient, err = sarama.NewClient(strings.Split(brokers, ","), config)
-	if err != nil {
-		log.Panicf("Error new kafka client: %v", err)
-
-	}
-
-	admin, err = sarama.NewClusterAdminFromClient(kafkaClient)
-	if err != nil {
-		log.Panicf("Error new cluster admin: %v", err)
-	}
+			admin, err = sarama.NewClusterAdminFromClient(kafkaClient)
+			if err != nil {
+				log.Printf("Error new kafka cluster admin: %v", err)
+				return err
+			}
+			return nil
+		},
+	)
 
 	//producer, err := sarama.NewSyncProducer([]string{brokers}, config)
 	//producer, err = sarama.NewSyncProducerFromClient(kafkaClient)
@@ -201,6 +213,7 @@ func checkTopicPartitionConsumedSuccess(topic string, partiion []int32) (bool, e
 		return false, err
 	}
 	succ := true
+	hasMessage := false
 	for _topic, _consumerPartions := range (*res).Blocks {
 		for index, _consumerPartion := range _consumerPartions {
 			_topicParOffset, err := kafkaClient.GetOffset(_topic, index, sarama.OffsetNewest)
@@ -213,25 +226,15 @@ func checkTopicPartitionConsumedSuccess(topic string, partiion []int32) (bool, e
 			if _topicParOffset > 0 && _topicParOffset != _consumerPartion.Offset {
 				succ = false
 			}
+			if _topicParOffset > 0 {
+				hasMessage = true
+			}
 		}
 	}
-	return succ, nil
-}
-
-func cleanFinishedTopic(topicName string) {
-	err = admin.DeleteTopic(topicName)
-	if err == nil {
-		log.Printf("clean topic: %s", topicName)
-	} else {
-		log.Printf("clean topic %s failed, %v ", topicName, err)
+	if !hasMessage {
+		succ = false
 	}
-	// err = admin.DeleteConsumerGroup(topicName)
-
-	// if err == nil {
-	// 	log.Printf("clean consumeGroup: %s", topicName)
-	// } else {
-	// 	log.Printf("clean consumeGroup %s failed, %v  ", topicName, err)
-	// }
+	return succ, nil
 }
 
 func CreateProducer() (sarama.SyncProducer, error) {
@@ -349,6 +352,8 @@ func CreateConsumer(topic string, p2pMode bool) error {
 		err = consumerGroup.Close()
 		if err != nil {
 			log.Printf("Error closing  consumer(%s): %v", cgStr, err)
+		} else {
+			log.Printf("closing  consumer(%s) success!", cgStr)
 		}
 	}
 
@@ -379,162 +384,218 @@ func (consumer *Consumer) Cleanup(sess sarama.ConsumerGroupSession) error {
 
 // ConsumeClaim must start a consumer loop of ConsumerGroupClaim's Messages().
 func (consumer *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-
 	claimTopic := claim.Topic()
 	if claimTopic == topics {
-		return consumer.ConsumeTopicMsg(session, claim)
+		return consumer.ConsumeJobNotifyEventMsg(session, claim)
 	} else {
 		return consumer.ConsumeAppMsg(session, claim)
 	}
 
 }
 
-func (consumer *Consumer) ConsumeTopicMsg(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+type CleanExpiredTopicJob struct {
+	*BaseJob
+	jobEndMessage *sarama.ConsumerMessage
+	session       sarama.ConsumerGroupSession
+}
+
+func (s *CleanExpiredTopicJob) Execute() error {
+	cleanFinishedTopic(s.session, s.jobEndMessage)
+	return nil
+}
+
+type CleanTopicJob struct {
+	*BaseJob
+	jobEndMessage *sarama.ConsumerMessage
+	session       sarama.ConsumerGroupSession
+}
+
+func (s *CleanTopicJob) Execute() error {
+	ticker := time.NewTicker(30 * time.Second)
+	topic := s.jobEndMessage.Topic + "-" + string(s.jobEndMessage.Key)
+
+	succ := checkTopicConsumedFinished(topic)
+	for {
+		if succ {
+			ticker.Stop()
+			cleanFinishedTopic(s.session, s.jobEndMessage)
+			break
+		}
+		<-ticker.C
+
+		succ = checkTopicConsumedFinished(topic)
+
+	}
+
+	return nil
+}
+
+type StartComsumerJob struct {
+	*BaseJob
+	jobStartMessage *sarama.ConsumerMessage
+	session         sarama.ConsumerGroupSession
+}
+
+func (s *StartComsumerJob) Execute() error {
+	topic := s.jobStartMessage.Topic + "-" + string(s.jobStartMessage.Key)
+	go func(topic string) {
+		succ := checkTopicConsumedFinished(topic)
+		_, readyExist := consumerGroupCache[topic]
+		if !succ && !readyExist {
+			//session.MarkMessage(job_started, "")
+
+			CreateConsumer(topic, false)
+
+		}
+
+	}(topic)
+
+	return nil
+}
+
+func cleanFinishedTopic(session sarama.ConsumerGroupSession, jobMessage *sarama.ConsumerMessage) {
+	jobs_ended := jobMessage
+	topic := jobs_ended.Topic
+	topicName := topic + "-" + string(jobs_ended.Key)
+
+	err = admin.DeleteTopic(topicName)
+
+	if err == nil {
+		log.Printf("DeleteTopic: %s", topicName)
+	} else {
+		log.Printf("DeleteTopic %s failed, %v ", topicName, err)
+	}
+
+	cleanPartionRecords(session, jobMessage)
+
+	comsumer, cgReady := consumerGroupCache[topicName]
+	if cgReady {
+		//*ready <- false
+		close((*comsumer).ready)
+		delete(consumerGroupCache, topic)
+	}
+}
+
+func cleanPartionRecords(session sarama.ConsumerGroupSession, message *sarama.ConsumerMessage) {
+	//session.MarkMessage(message, "")
+	partitionOffsets := make(map[int32]int64)
+	partitionOffsets[message.Partition] = message.Offset + 1
+	err = admin.DeleteRecords(message.Topic, partitionOffsets)
+	if err == nil {
+		log.Printf("Delete topic: %s  records with partition: %d and offset: %d", message.Topic, message.Partition, message.Offset)
+	} else {
+		log.Printf("Error delete topic: %s  records: %v", message.Topic, err)
+	}
+}
+
+func checkExpiredJob(epochMillis int64) bool {
+	now := time.Now() //获取当前时间对象
+
+	if minBlockDurationUnit == "M" {
+		timestamp := now.Add(-1 * time.Duration(time.Minute*time.Duration(minBlockDurationValue)))
+		ts := timestamp.UnixMilli()
+		if ts > epochMillis {
+			return true
+		}
+
+	} else if minBlockDurationUnit == "H" {
+		timestamp := now.Add(-1 * time.Duration(time.Hour*time.Duration(minBlockDurationValue)))
+		ts := timestamp.UnixMilli()
+		if ts > epochMillis {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (consumer *Consumer) ConsumeJobNotifyEventMsg(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	var claimMessageChan = claim.Messages()
 	var currentMessage *sarama.ConsumerMessage
-	msgMap := make(map[string]chan *sarama.ConsumerMessage)
-	readyMap := make(map[string]chan bool)
+
+	var topicQueueCache sync.Map
+
 	for {
 		select {
 		case message, ok := <-claimMessageChan:
 			if ok {
 				currentMessage = message
-				currentKey := string(currentMessage.Key)
-				ch, chexist := msgMap[currentKey]
-				_, exist := readyMap[currentKey]
-				// no correspond channel in cache, create new and put to cache
-				if !exist && !chexist {
-					dealAppTopicChannel(&readyMap, &msgMap, session)
-					ch = make(chan *sarama.ConsumerMessage, batchSendNum)
-					readyChan := make(chan bool)
-					msgMap[currentKey] = ch
-					readyMap[currentKey] = readyChan
+				currentMessageValue := string(currentMessage.Value)
+				_map, err := convertMap(currentMessageValue)
+				if err == nil {
+					name := GetInterfaceToString(_map["name"])
 
+					_, currentKey, err := convertTimeSeries(_map)
+
+					if err == nil && currentKey != "" && currentKey != "noAppId" {
+						currentPartition := currentMessage.Partition
+						if _, ok := topicQueueCache.Load(currentPartition); !ok {
+							queue := &JobQueue{
+								jobList:    list.New(),
+								noticeChan: make(chan struct{}, 10),
+							}
+							//初始化一个消费worker
+							workerManger := WorkerManager{queue, make(chan struct{}, 1)}
+							// worker开始监听队列
+							go workerManger.StartWork()
+							topicQueueCache.Store(currentPartition, queue)
+
+						}
+						_workQueue, _ := topicQueueCache.Load(currentPartition)
+						workQueue := _workQueue.(*JobQueue)
+
+						if epochMillis, ok := _map["epochMillis"].(float64); ok {
+							expiredJob := checkExpiredJob(int64(epochMillis))
+							if !expiredJob {
+								if name == "jobs_started" {
+									// push job
+									job := &StartComsumerJob{
+										BaseJob: &BaseJob{
+											DoneChan: make(chan struct{}, 1),
+										},
+										jobStartMessage: currentMessage,
+										session:         session,
+									}
+									//压入队列尾部
+									workQueue.PushJob(job)
+								} else if name == "jobs_ended" {
+									// push TopicCleanJob
+									job := &CleanTopicJob{
+										BaseJob: &BaseJob{
+											DoneChan: make(chan struct{}, 1),
+										},
+										jobEndMessage: currentMessage,
+										session:       session,
+									}
+									//压入队列尾部
+									workQueue.PushJob(job)
+								}
+							} else {
+								if name == "jobs_ended" {
+									job := &CleanExpiredTopicJob{
+										BaseJob: &BaseJob{
+											DoneChan: make(chan struct{}, 1),
+										},
+										jobEndMessage: currentMessage,
+										session:       session,
+									}
+									//压入队列尾部
+									workQueue.PushJob(job)
+								}
+							}
+						}
+
+					}
+					log.Printf("Message consumed: topic=%s, hash-key=%s, partition=%d, offset{%d}, message: %s",
+						(*currentMessage).Topic, string((*currentMessage).Key), (*currentMessage).Partition, (*currentMessage).Offset, (*currentMessage).Value)
 				}
-				ch <- currentMessage
-				if len(ch) == cap(ch) {
-					dealAppTopicChannel(&readyMap, &msgMap, session)
-				}
-				//log.Printf("topic message: %s", string(currentMessage.Value))
 			}
 
-		case <-time.After(time.Millisecond * 200):
-			dealAppTopicChannel(&readyMap, &msgMap, session)
 		case <-session.Context().Done():
 			return nil
 
 		}
 	}
-}
-
-func dealAppTopicChannel(readyMap *map[string]chan bool, msgMap *map[string]chan *sarama.ConsumerMessage, session sarama.ConsumerGroupSession) {
-	for currentKey, readyChan := range *readyMap {
-		go func() {
-			readyChan <- true
-			close(readyChan)
-		}()
-		ch := (*msgMap)[currentKey]
-		close(ch)
-		readSendDealTopic(ch, readyChan, session, currentKey)
-		delete(*msgMap, currentKey)
-		delete(*readyMap, currentKey)
-
-	}
-}
-
-func readSendDealTopic(ch <-chan *sarama.ConsumerMessage, ready chan bool, session sarama.ConsumerGroupSession, currentKey string) {
-re:
-	for {
-		select {
-		case canRead := <-ready:
-			if canRead {
-				break re
-			}
-
-		}
-	}
-
-	var currentMessage *sarama.ConsumerMessage
-	var beginMessage *sarama.ConsumerMessage
-
-	i := 0
-	topic := topics + "-" + currentKey
-	for message := range ch {
-		currentMessage = message
-		if i == 0 {
-			beginMessage = message
-		}
-
-		currentMessageValue := string(currentMessage.Value)
-		_map, err := convertMap(currentMessageValue)
-		if err == nil {
-			name := GetInterfaceToString(_map["name"])
-			_, currentKey, err := convertTimeSeries(_map)
-
-			if err == nil && currentKey != "" && currentKey != "noAppId" {
-				if name == "jobs_started" {
-					//if _, ok := finishedTopicCache.Load(topic); !ok {
-					topicCache.Store(topic, name)
-					//}
-
-				} else if name == "jobs_ended" {
-					//topicCache.Delete(topic)
-					finishedTopicCache.Store(topic, name)
-
-				}
-			}
-		}
-		i++
-	}
-	succ := checkTopicConsumedFinished(topic)
-	_, ok := topicCache.Load(topic)
-	if ok {
-		go func(topic string) {
-
-			_, readyExist := consumerGroupCache[topic]
-			if !succ && !readyExist {
-				session.MarkMessage(currentMessage, "")
-				CreateConsumer(topic, false)
-			}
-
-		}(topic)
-		topicCache.Delete(topic)
-	}
-
-	_, ok = finishedTopicCache.Load(topic)
-	if ok {
-		ticker := time.NewTicker(15 * time.Second)
-
-		go func(topic string) {
-			for {
-				comsumer, readyExist := consumerGroupCache[topic]
-				if succ {
-					session.MarkMessage(currentMessage, "")
-					ticker.Stop()
-					cleanFinishedTopic(topic)
-
-					if readyExist {
-						//*ready <- false
-						close((*comsumer).ready)
-						delete(consumerGroupCache, topic)
-					}
-					break
-				}
-				<-ticker.C
-				log.Printf("Checking topic(%s) consuming status", topic)
-				succ = checkTopicConsumedFinished(topic)
-			}
-
-		}(topic)
-		finishedTopicCache.Delete(topic)
-	}
-
-	if err == nil {
-		//session.MarkMessage(currentMessage, "")
-		log.Printf("Message consumed: topic=%s, hash-key=%s, partition=%d, from-to offset{%d--%d}, message: %s", (*currentMessage).Topic, currentKey, (*currentMessage).Partition, (*beginMessage).Offset, (*currentMessage).Offset, (*currentMessage).Value)
-
-	}
-
 }
 
 // ConsumeClaim must start a consumer loop of ConsumerGroupClaim's Messages().
@@ -568,26 +629,12 @@ func (consumer *Consumer) ConsumeAppMsg(session sarama.ConsumerGroupSession, cla
 							dealReadyChannel(&readyMap, &msgMap, currentMessage, session)
 						}
 					}
-					//deal with cg when jobs_ended triggered
-					// name := _map["name"]
-					// if name == "jobs_ended" {
-					// 	log.Printf("jobs_ended message: %s", currentMessageValue)
 
-					// 	msg := &sarama.ProducerMessage{
-					// 		Topic: topics,
-					// 		Key:   sarama.StringEncoder(currentKey),
-					// 		Value: sarama.StringEncoder(currentMessageValue),
-					// 	}
-					// 	_, _, err = producer.SendMessage(msg)
-					// 	if err != nil {
-					// 		log.Printf("produce jobs_ended message failed : %v", err)
-					// 	}
-					// }
 				}
 
 			}
 
-		case <-time.After(time.Millisecond * 200):
+		case <-time.After(time.Second * 3):
 			dealReadyChannel(&readyMap, &msgMap, currentMessage, session)
 		case <-session.Context().Done():
 			return nil
@@ -638,199 +685,10 @@ re:
 func markMessageIfSendPromSuccess(tslist []promremote.TimeSeries, currentMessage *sarama.ConsumerMessage, currentKey string, session sarama.ConsumerGroupSession) error {
 	//err := send2Prom(tslist, currentKey)
 
-	//if err1 == nil {
+	//if err == nil {
 	session.MarkMessage(currentMessage, "")
-	beginoffset := (*currentMessage).Offset - int64(len(tslist)) + 1
-	log.Printf("Message consumed: topic=%s,  partition=%d, from-to offset{%d--%d}", (*currentMessage).Topic, (*currentMessage).Partition, beginoffset, (*currentMessage).Offset)
+	//beginoffset := (*currentMessage).Offset - int64(len(tslist)) + 1
+	//log.Printf("Message consumed: topic=%s,  partition=%d, from-to offset{%d--%d}", (*currentMessage).Topic, (*currentMessage).Partition, beginoffset, (*currentMessage).Offset)
 	//}
 	return nil
 }
-
-// func readAndSend(ch <-chan *sarama.ConsumerMessage, ready chan bool, session sarama.ConsumerGroupSession, currentKey string) {
-// 	re:
-// 		for {
-// 			select {
-// 			case canRead := <-ready:
-// 				if canRead {
-// 					break re
-// 				}
-
-// 			}
-// 		}
-
-// 		var currentMessage *sarama.ConsumerMessage
-// 		var beginMessage *sarama.ConsumerMessage
-// 		msgBatch := make([]string, 0, batchSendNum)
-// 		i := 0
-// 		for message := range ch {
-// 			currentMessage = message
-// 			if i == 0 {
-// 				beginMessage = message
-// 			}
-
-// 			msg := string(currentMessage.Value)
-// 			msgBatch = append(msgBatch, msg)
-// 			i++
-// 		}
-
-// 		err := WriteInBatch(msgBatch, currentKey)
-// 		if err == nil {
-// 			session.MarkMessage(currentMessage, "")
-// 			log.Printf("Message consumed: topic=%s, hash-key=%s, partition=%d, from-to offset{%d--%d}", (*currentMessage).Topic, currentKey, (*currentMessage).Partition, (*beginMessage).Offset, (*currentMessage).Offset)
-// 			//log.Printf("Message claimed: value = %s, timestamp = %v, topic = %s, partition = %s, offset= %s", (*currentMessage).Value, (*currentMessage).Timestamp, (*currentMessage).Topic, (*currentMessage).Partition, (*currentMessage).Offset)
-// 		}
-
-// 	}
-// func dealExistChannel(readyMap *map[string]chan bool, msgMap *map[string]chan *sarama.ConsumerMessage, session sarama.ConsumerGroupSession) {
-// 	for currentKey, readyChan := range *readyMap {
-// 		go func() {
-// 			readyChan <- true
-// 			close(readyChan)
-// 		}()
-// 		ch := (*msgMap)[currentKey]
-// 		close(ch)
-// 		readAndSend(ch, readyChan, session, currentKey)
-// 		delete(*msgMap, currentKey)
-// 		delete(*readyMap, currentKey)
-
-// 	}
-// }
-// func (consumer *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-// 	var claimMessageChan = claim.Messages()
-// 	var currentMessage *sarama.ConsumerMessage
-// 	msgMap := make(map[string]chan *sarama.ConsumerMessage)
-// 	readyMap := make(map[string]chan bool)
-// 	for {
-// 		select {
-// 		case message, ok := <-claimMessageChan:
-// 			if ok {
-// 				currentMessage = message
-// 				currentKey := string(currentMessage.Key)
-// 				ch, exist := msgMap[currentKey]
-// 				readyChan, exist := readyMap[currentKey]
-// 				// no correspond channel in cache, create new and put to cache
-// 				if !exist {
-// 					dealExistChannel(&readyMap, &msgMap, session)
-// 					ch = make(chan *sarama.ConsumerMessage, batchSendNum)
-// 					readyChan = make(chan bool)
-// 					msgMap[currentKey] = ch
-// 					readyMap[currentKey] = readyChan
-
-// 				}
-// 				ch <- currentMessage
-// 				if len(ch) == cap(ch) {
-// 					dealExistChannel(&readyMap, &msgMap, session)
-// 				}
-
-// 			}
-
-// 		case <-time.After(time.Millisecond * 100):
-// 			dealExistChannel(&readyMap, &msgMap, session)
-// 		case <-session.Context().Done():
-// 			return nil
-
-// 		}
-// 	}
-
-// 	//	return dispatchMessage(claimMessageChan, session)
-
-// }
-
-// func (consumer *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-// 	var claimMessageChan = claim.Messages()
-
-// 	msgMap := make(map[string][]string)
-// 	index := 0
-// 	var currentMessage *sarama.ConsumerMessage
-// 	for {
-// 		select {
-// 		case message, ok := <-claimMessageChan:
-// 			if ok {
-// 				currentMessage = message
-// 				currentKey := string(currentMessage.Key)
-// 				msgBatch, ok := msgMap[currentKey]
-// 				if !ok {
-// 					// 不存在appid
-// 					msgBatch = make([]string, 0, batchSendNum)
-// 					msgMap[currentKey] = msgBatch
-// 				}
-// 				msg := string(currentMessage.Value)
-
-// 				msgBatch = append(msgBatch, msg)
-// 				index++
-// 				if index >= int(batchSendNum) {
-// 					batchRemoteWrite(session, &currentMessage, &msgBatch, &index)
-// 				}
-
-// 			}
-
-// 		case <-time.After(time.Second * 1):
-// 			if currentMessage != nil {
-// 				currentKey := string(currentMessage.Key)
-// 				msgBatch, ok := msgMap[currentKey]
-// 				if ok {
-// 					batchRemoteWrite(session, &currentMessage, &msgBatch, &index)
-// 				}
-
-// 			}
-// 		case <-session.Context().Done():
-// 			return nil
-// 		}
-// 	}
-
-// }
-
-// func dispatchMessage(claimMessageChan <-chan *sarama.ConsumerMessage, session sarama.ConsumerGroupSession) error {
-// 	var currentMessage *sarama.ConsumerMessage
-// 	msgMap := make(map[string]chan *sarama.ConsumerMessage)
-// 	readyMap := make(map[string]chan bool)
-// 	for {
-// 		select {
-// 		case message, ok := <-claimMessageChan:
-// 			if ok {
-// 				currentMessage = message
-// 				currentKey := string(currentMessage.Key)
-// 				ch, exist := msgMap[currentKey]
-// 				readyChan, exist := readyMap[currentKey]
-// 				// no correspond channel in cache, create new and put to cache
-// 				if !exist {
-// 					ch = make(chan *sarama.ConsumerMessage, batchSendNum)
-// 					readyChan := make(chan bool)
-// 					msgMap[currentKey] = ch
-// 					readyMap[currentKey] = readyChan
-// 				}
-// 				ch <- currentMessage
-// 				if len(ch) == cap(ch) {
-// 					readyChan <- true
-// 					close(ch)
-// 					close(readyChan)
-// 					delete(msgMap, currentKey)
-// 					delete(readyMap, currentKey)
-// 				}
-// 				go readAndSend(ch, readyChan, session, currentKey)
-// 			}
-
-// 		case <-time.After(time.Second * 1):
-// 			for _, v := range readyMap {
-// 				v <- true
-// 			}
-// 		case <-session.Context().Done():
-// 			return nil
-
-// 		}
-// 	}
-
-// }
-
-// func batchRemoteWrite(session sarama.ConsumerGroupSession, currentMessage **sarama.ConsumerMessage, msgBatch *[]string, index *int) error {
-
-// 	err := WriteInBatch(*msgBatch)
-// 	if err == nil {
-// 		session.MarkMessage(*currentMessage, "")
-// 		log.Printf("Message claimed: value = %s, timestamp = %v, topic = %s, partition = %s, offset= %s", (*currentMessage).Value, (*currentMessage).Timestamp, (*currentMessage).Topic, (*currentMessage).Partition, (*currentMessage).Offset)
-// 	}
-// 	*index = 0
-// 	*msgBatch = (*msgBatch)[0:0]
-// 	*currentMessage = nil
-// 	return err
-// }

@@ -11,14 +11,14 @@
             "mode": "debug",
             "program": "app.go",
             "env": { 
-                "Brokers" : "ac355e824e15e4061877e79abb09fc53-903308513.us-west-2.elb.amazonaws.com:9094",
-                "Topic": "sparkmeasure",
-                
-                "PROM_HTTP_URL" : "http://k8s-thanos-thanosqu-dc129259ac-1113383797.us-west-2.elb.amazonaws.com/",
-                "PROM_REMOTE_WRITE_URL" : "http://localhost:9090/api/v1/write",
-                "INFLUXDB_HOST":"http://10.1.2.61:30617",
-                "INFLUXDB_DATABASE_NAME":"sparkmeasure",
-                "DASHBOARD_URL_TEMPLATE":"http://10.1.2.61:31042/d/q4iK3uq7z/spark_perf_dashboard_v03_with_annotations_prom?from=%s&to=%s&var-UserName=donggetan&var-ApplicationId=%s"}
+                "KafkaBrokers" : "10.1.2.64:32467",
+                "KafkaTopic": "sparkmeasure",
+                "BatchSendNum": "100",
+                "PromHttpUrl" : "http://k8s-thanos-thanosqu-dc129259ac-1113383797.us-west-2.elb.amazonaws.com/",
+                "PromRemoteWriteUrl" : "http://10.1.2.63:32437/api/v1/write",
+                "InfluxDBHost":"http://10.1.2.61:30617",
+                "InfluxDBDatabase":"sparkmeasure",
+                "DashboardUrlTemplate":"http://10.1.2.61:31042/d/q4iK3uq7z/spark_perf_dashboard_v03_with_annotations_prom?from=%s&to=%s&var-UserName=donggetan&var-ApplicationId=%s"}
 
             },
        

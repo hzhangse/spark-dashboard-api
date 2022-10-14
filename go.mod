@@ -4,11 +4,11 @@ go 1.17
 
 require (
 	github.com/Shopify/sarama v1.34.1
+	github.com/avast/retry-go/v4 v4.1.0
 	github.com/gin-gonic/gin v1.6.3
 	github.com/golang/protobuf v1.5.2
 	github.com/golang/snappy v0.0.4
 	github.com/influxdata/influxdb1-client v0.0.0-20220302092344-a9ab5670611c
-	github.com/m3db/prometheus_remote_client_golang v0.4.4
 	github.com/prometheus/client_golang v1.12.2
 	github.com/prometheus/common v0.37.0
 	github.com/prometheus/prometheus v0.37.0
