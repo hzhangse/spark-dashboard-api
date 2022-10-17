@@ -683,12 +683,12 @@ re:
 }
 
 func markMessageIfSendPromSuccess(tslist []promremote.TimeSeries, currentMessage *sarama.ConsumerMessage, currentKey string, session sarama.ConsumerGroupSession) error {
-	//err := send2Prom(tslist, currentKey)
+	err := send2Prom(tslist, currentKey)
 
-	//if err == nil {
-	session.MarkMessage(currentMessage, "")
-	//beginoffset := (*currentMessage).Offset - int64(len(tslist)) + 1
-	//log.Printf("Message consumed: topic=%s,  partition=%d, from-to offset{%d--%d}", (*currentMessage).Topic, (*currentMessage).Partition, beginoffset, (*currentMessage).Offset)
-	//}
+	if err == nil {
+		session.MarkMessage(currentMessage, "")
+		//beginoffset := (*currentMessage).Offset - int64(len(tslist)) + 1
+		//log.Printf("Message consumed: topic=%s,  partition=%d, from-to offset{%d--%d}", (*currentMessage).Topic, (*currentMessage).Partition, beginoffset, (*currentMessage).Offset)
+	}
 	return nil
 }
